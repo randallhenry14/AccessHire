@@ -2,6 +2,9 @@
 <html>
 <head>
 <meta charset="UTF-8">
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bark:#3B1A08;--mahog:#5C2D0A;--sienna:#8B4513;--cara:#A0522D;--tan:#C68642;--wheat:#DEB887;--linen:#FAF0E6;--cream:#FDF6EE;--parch:#F5E6D3;--sand:#E8D5B7;--gold:#B8860B;--olive:#5C8A3C;--rust:#C0392B;--brd:#D4B896;--sha:0 2px 12px rgba(59,26,8,.13);--sha2:0 4px 24px rgba(59,26,8,.18);--r:10px;--r2:16px}
@@ -146,7 +149,33 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--cream);color:v
 <div id="modal-root"></div>
 
 <script>
+// Firebase Configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBJw5z3K6L9pQ2xR8vN7mO1jK3uL5sT9wX",
+  authDomain: "accesshire-app.firebaseapp.com",
+  projectId: "accesshire-app",
+  storageBucket: "accesshire-app.appspot.com",
+  messagingSenderId: "123456789012",
+  appId: "1:123456789012:web:abcdef1234567890"
+};
+
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+let fbUser = null;
+let fbDb = null;
+
+// Listen for auth state changes
+auth.onAuthStateChanged(function(user) {
+  fbUser = user;
+  if(user) {
+    fbDb = db;
+  }
+});
+
 var ST={user:null,page:'home',heroTpl:0,jobs:[],savedIds:[],archivedIds:[],appliedApps:[],invitations:[],interviews:[],dashTab:'jobs',jobSubtab:'browse',settingsTab:'profile',jobFilters:{wm:[],jt:[]}};
+
 var PHYS=['Sedentary (sitting)','Light lifting <10 lbs','Medium lifting 11-50 lbs','Heavy lifting 51-100 lbs','Very heavy 100+ lbs','Standing extended periods','Walking uneven surfaces','Climbing stairs/ladders','Repetitive hand motions','Operating machinery','Outdoor/field work','Visual acuity required'];
 var WMODES=['Remote','Hybrid','On-site'],JTYPES=['Full-time','Part-time','Contract','Temporary','Internship','Volunteer'];
 var EDULS=["High School / GED","Associate's","Bachelor's","Master's","Doctoral","Professional","Bootcamp","Trade/Vocational"];
@@ -249,14 +278,73 @@ function avHTML(url,name,sz){sz=sz||36;if(url)return '<img src="'+url+'" class="
 
 async function boot(){
   await initDB();
-  ST.user = await dbGet('data', 'user');
-  ST.jobs = await dbGet('data', 'jobs') || [];
-  if(ST.user&&ST.user.role==='applicant'){ST.savedIds=await dbGet('data','saved_'+ST.user.id)||[];ST.archivedIds=await dbGet('data','arch_'+ST.user.id)||[];ST.appliedApps=await dbGet('data','applied_'+ST.user.id)||[];ST.invitations=await dbGet('data','inv_'+ST.user.id)||[];ST.interviews=await dbGet('data','intv_'+ST.user.id)||[]}
+  // Check if user is logged in with Firebase
+  if(fbUser) {
+    try {
+      var docSnap = await db.collection('users').doc(fbUser.uid).get();
+      if(docSnap.exists) {
+        ST.user = docSnap.data();
+        if(ST.user.role === 'applicant') {
+          ST.savedIds = await getFirestoreData('saved') || [];
+          ST.archivedIds = await getFirestoreData('archived') || [];
+          ST.appliedApps = await getFirestoreData('applied') || [];
+          ST.invitations = await getFirestoreData('invitations') || [];
+          ST.interviews = await getFirestoreData('interviews') || [];
+        }
+      }
+    } catch(e) {
+      console.error('Firebase boot error:', e);
+    }
+  } else {
+    // Fall back to local storage
+    ST.user = await dbGet('data', 'user');
+    ST.jobs = await dbGet('data', 'jobs') || [];
+    if(ST.user && ST.user.role === 'applicant') {
+      ST.savedIds = await dbGet('data','saved_'+ST.user.id) || [];
+      ST.archivedIds = await dbGet('data','arch_'+ST.user.id) || [];
+      ST.appliedApps = await dbGet('data','applied_'+ST.user.id) || [];
+      ST.invitations = await dbGet('data','inv_'+ST.user.id) || [];
+      ST.interviews = await dbGet('data','intv_'+ST.user.id) || [];
+    }
+  }
+  // Load jobs from Firestore
+  try {
+    var jobsSnap = await db.collection('jobs').get();
+    ST.jobs = [];
+    jobsSnap.forEach(function(doc) {
+      ST.jobs.push(doc.data());
+    });
+  } catch(e) {
+    // Use local jobs if Firestore fails
+    ST.jobs = await dbGet('data', 'jobs') || [];
+  }
   render();
+}
+function getFirestoreData(type) {
+  if(!fbUser) return Promise.resolve(null);
+  return db.collection('users').doc(fbUser.uid).collection(type).get().then(function(snap) {
+    var data = [];
+    snap.forEach(function(doc) {
+      data.push(doc.data());
+    });
+    return data;
+  }).catch(function(e) {
+    console.error('Error fetching '+type+':', e);
+    return null;
+  });
 }
 function render(){renderNav();renderPage()}
 function go(pg){ST.page=pg;render()}
-function logout(){ST.user=null;sSet('ah_user',null);ST.page='home';toast('Signed out.','info');render()}
+function logout(){
+  auth.signOut().then(function() {
+    ST.user = null;
+    ST.page = 'home';
+    toast('Signed out.','info');
+    render();
+  }).catch(function(e) {
+    toast('Logout failed: '+e.message,'error');
+  });
+}
 
 function renderNav(){
   var el=document.getElementById('nav-links'),u=ST.user,html='';
@@ -355,12 +443,12 @@ function renderInvitations(){if(!ST.invitations.length)return '<div class="empty
 function renderInterviews(){if(!ST.interviews.length)return '<div class="empty"><div style="font-size:36px;margin-bottom:10px">&#128197;</div><div class="empty-t">No interviews scheduled</div></div>';return '<div style="display:flex;flex-direction:column;gap:10px">'+ST.interviews.map(function(iv){return '<div class="intv-c"><div style="display:flex;align-items:flex-start;justify-content:space-between"><div><div style="font-weight:700;font-size:15px;color:var(--bark);margin-bottom:2px">Interview: '+esc(iv.jobTitle)+'</div><div style="font-size:13px;color:var(--cara);margin-bottom:10px">'+esc(iv.company)+'</div><div style="display:flex;gap:20px;flex-wrap:wrap"><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara)">Date &amp; Time</div><div style="font-weight:700;color:var(--bark)">'+esc(iv.date)+' at '+esc(iv.time)+'</div></div><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara)">Format</div><div style="font-weight:700;color:var(--bark)">'+esc(iv.fmt)+'</div></div>'+(iv.loc?'<div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara)">Location</div><div style="font-weight:700;color:var(--bark)">'+esc(iv.loc)+'</div></div>':'')+'</div>'+(iv.notes?'<div style="font-size:13px;color:var(--cara);margin-top:8px">'+esc(iv.notes)+'</div>':'')+'</div><span class="badge b-gr">Scheduled</span></div></div>'}).join('')+'</div>';}
 function filterJobs(){var jl=document.getElementById('jlist');if(!jl)return;var isApp=ST.user&&ST.user.role==='applicant';var aJ=ST.jobs.filter(function(j){return j.status==='active'&&(!isApp||ST.archivedIds.indexOf(j.id)<0)});jl.innerHTML=renderJobList(applyFilters(aJ),isApp?{browse:true}:{});}
 function toggleFilter(k,v){var arr=ST.jobFilters[k];var i=arr.indexOf(v);if(i>=0)arr.splice(i,1);else arr.push(v);renderPage()}
-function toggleSave(id){var i=ST.savedIds.indexOf(id);if(i>=0)ST.savedIds.splice(i,1);else ST.savedIds.push(id);sSet('ah_saved_'+ST.user.id,ST.savedIds);toast(i>=0?'Removed from saved.':'Job saved!',i>=0?'info':'success');renderPage()}
-function unsaveJob(id){var i=ST.savedIds.indexOf(id);if(i>=0)ST.savedIds.splice(i,1);sSet('ah_saved_'+ST.user.id,ST.savedIds);toast('Removed.','info');renderPage()}
-function archiveJob(id){if(ST.archivedIds.indexOf(id)<0)ST.archivedIds.push(id);sSet('ah_arch_'+ST.user.id,ST.archivedIds);toast('Archived.','info');renderPage()}
-function unarchiveJob(id){var i=ST.archivedIds.indexOf(id);if(i>=0)ST.archivedIds.splice(i,1);sSet('ah_arch_'+ST.user.id,ST.archivedIds);toast('Unarchived.','info');renderPage()}
-function withdrawApp(jobId){if(!confirm('Withdraw this application?'))return;ST.appliedApps=ST.appliedApps.filter(function(a){return a.jobId!==jobId});sSet('ah_applied_'+ST.user.id,ST.appliedApps);toast('Application withdrawn.','info');renderPage()}
-function respondInv(id,accept){var inv=ST.invitations.find(function(i){return i.id===id});if(inv)inv.status=accept?'accepted':'rejected';sSet('ah_inv_'+ST.user.id,ST.invitations);toast(accept?'Invitation accepted!':'Invitation declined.',accept?'success':'info');renderPage()}
+function toggleSave(id){var i=ST.savedIds.indexOf(id);if(i>=0)ST.savedIds.splice(i,1);else ST.savedIds.push(id);sSet('ah_saved_'+ST.user.id,ST.savedIds);if(fbUser){var ref=db.collection('users').doc(fbUser.uid).collection('saved').doc(id);if(i>=0)ref.delete();else ref.set({jobId:id,savedAt:Date.now()});}toast(i>=0?'Removed from saved.':'Job saved!',i>=0?'info':'success');renderPage()}
+function unsaveJob(id){var i=ST.savedIds.indexOf(id);if(i>=0)ST.savedIds.splice(i,1);sSet('ah_saved_'+ST.user.id,ST.savedIds);if(fbUser)db.collection('users').doc(fbUser.uid).collection('saved').doc(id).delete();toast('Removed.','info');renderPage()}
+function archiveJob(id){if(ST.archivedIds.indexOf(id)<0)ST.archivedIds.push(id);sSet('ah_arch_'+ST.user.id,ST.archivedIds);if(fbUser)db.collection('users').doc(fbUser.uid).collection('archived').doc(id).set({jobId:id,archivedAt:Date.now()});toast('Archived.','info');renderPage()}
+function unarchiveJob(id){var i=ST.archivedIds.indexOf(id);if(i>=0)ST.archivedIds.splice(i,1);sSet('ah_arch_'+ST.user.id,ST.archivedIds);if(fbUser)db.collection('users').doc(fbUser.uid).collection('archived').doc(id).delete();toast('Unarchived.','info');renderPage()}
+function withdrawApp(jobId){if(!confirm('Withdraw this application?'))return;ST.appliedApps=ST.appliedApps.filter(function(a){return a.jobId!==jobId});sSet('ah_applied_'+ST.user.id,ST.appliedApps);if(fbUser){db.collection('users').doc(fbUser.uid).collection('applied').where('jobId','==',jobId).get().then(function(snap){snap.forEach(function(doc){doc.ref.delete();})});}toast('Application withdrawn.','info');renderPage()}
+function respondInv(id,accept){var inv=ST.invitations.find(function(i){return i.id===id});if(inv)inv.status=accept?'accepted':'rejected';sSet('ah_inv_'+ST.user.id,ST.invitations);if(fbUser){db.collection('users').doc(fbUser.uid).collection('invitations').doc(id).update({status:accept?'accepted':'rejected'});}toast(accept?'Invitation accepted!':'Invitation declined.',accept?'success':'info');renderPage()}
 
 /* ── JOB DETAIL MODAL ── */
 function openJobDetail(jid){
@@ -375,7 +463,7 @@ function openJobDetail(jid){
   showModal('md-lg','<div class="md-h"><div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"><span class="ada-s">&#9855; ADA-Verified</span><span class="badge b-br">'+esc(j.wm)+'</span><span class="badge b-tn">'+esc(j.jt)+'</span></div><div class="md-t">'+esc(j.title)+'</div><div style="color:var(--cara);font-size:13px;margin-top:3px">'+esc(j.company)+' &middot; '+esc(j.location)+'</div></div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b">'+(j.sal?'<div class="al al-br">&#128176; <strong>Compensation:</strong> '+esc(j.sal)+'</div>':'')+'<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--cara);margin-bottom:6px">About This Role</div><div style="font-size:14px;line-height:1.7;color:var(--bark);white-space:pre-wrap">'+esc(j.desc)+'</div></div><div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--cara);margin-bottom:6px">Requirements</div><div style="font-size:14px;line-height:1.7;white-space:pre-wrap">'+esc(j.reqs)+'</div></div><div style="background:rgba(139,69,19,.05);border:1.5px solid rgba(139,69,19,.18);border-radius:var(--r);padding:18px"><div style="font-weight:700;color:var(--bark);margin-bottom:12px">&#9855; ADA Disclosures</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px"><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara);margin-bottom:6px">Physical Demands</div><div style="display:flex;flex-wrap:wrap">'+(phys||'<span style="color:var(--cara);font-size:13px">None listed</span>')+'</div></div><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara);margin-bottom:6px">Travel</div><div style="font-size:13px;color:var(--bark)">'+esc(j.travelDetails||'No travel required')+'</div></div><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara);margin-bottom:6px">Accommodations</div><div style="font-size:13px;color:var(--bark)">'+esc(j.accomm||'Contact employer')+'</div></div><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--cara);margin-bottom:6px">Contact</div><div style="font-size:13px;color:var(--bark)">'+esc(j.accommEmail||'—')+'</div></div></div></div>'+applySection+'</div>');
 }
 function showApplyForm(jid){var a=document.getElementById('apply-area');if(!a)return;a.innerHTML='<div class="fg"><label class="fl">Cover Letter <span style="font-weight:400;color:var(--cara)">(optional)</span></label><textarea class="fi ftxt" id="cv-letter" rows="4" placeholder="Why are you a great fit?"></textarea></div><div style="display:flex;gap:8px"><button class="btn btn-p" onclick="submitApp(\''+jid+'\')">Submit Application</button><button class="btn btn-gh" onclick="document.getElementById(\'apply-area\').innerHTML=\'<button class=&quot;btn btn-g btn-lg&quot; onclick=&quot;showApplyForm(&bsol;&quot;'+jid+'&bsol;&quot;)&quot;>Apply Now</button>\'">Cancel</button></div>';}
-function submitApp(jid){var j=ST.jobs.find(function(x){return x.id===jid});if(!j||!ST.user)return;var cl=(document.getElementById('cv-letter')||{}).value||'';var app={jobId:jid,jobTitle:j.title,company:j.company,covLetter:cl,status:'applied',appliedAt:Date.now()};ST.appliedApps.push(app);sSet('ah_applied_'+ST.user.id,ST.appliedApps);var ea=sGet('ah_eapps_'+j.empId)||[];ea.push(Object.assign({},app,{appId:uid(),applicantId:ST.user.id,applicantName:ST.user.name||ST.user.email,applicantEmail:ST.user.email}));sSet('ah_eapps_'+j.empId,ea);closeModal();toast('Application submitted!','success');renderPage();}
+function submitApp(jid){var j=ST.jobs.find(function(x){return x.id===jid});if(!j||!ST.user)return;var cl=(document.getElementById('cv-letter')||{}).value||'';var app={jobId:jid,jobTitle:j.title,company:j.company,covLetter:cl,status:'applied',appliedAt:Date.now()};ST.appliedApps.push(app);sSet('ah_applied_'+ST.user.id,ST.appliedApps);if(fbUser){db.collection('users').doc(fbUser.uid).collection('applied').add(app);}var ea=sGet('ah_eapps_'+j.empId)||[];ea.push(Object.assign({},app,{appId:uid(),applicantId:ST.user.id,applicantName:ST.user.name||ST.user.email,applicantEmail:ST.user.email}));sSet('ah_eapps_'+j.empId,ea);if(fbUser){db.collection('jobs').doc(jid).collection('applications').add(Object.assign({},app,{appId:uid(),applicantId:ST.user.id,applicantName:ST.user.name||ST.user.email,applicantEmail:ST.user.email}));}closeModal();toast('Application submitted!','success');renderPage();}
 
 /* ── DASHBOARD ── */
 function renderDashboard(){
@@ -388,14 +476,14 @@ function renderDashboard(){
   else{content=myApps.length?'<div style="display:flex;flex-direction:column;gap:10px">'+myApps.map(function(a){var sc={applied:'b-br',reviewing:'b-gd',interview:'b-tn',accepted:'b-gr',rejected:'b-rd'};return '<div class="card card-sm"><div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px"><div style="flex:1"><div style="font-weight:700;font-size:14px;color:var(--bark)">'+esc(a.applicantName)+'</div><div style="font-size:12px;color:var(--cara)">'+esc(a.applicantEmail)+'</div><div style="font-size:12px;color:var(--cara);margin-top:4px">For: <strong>'+esc(a.jobTitle)+'</strong> &middot; '+fmtDate(a.appliedAt)+'</div>'+(a.covLetter?'<div style="margin-top:8px;background:var(--parch);border-radius:7px;padding:9px 12px;font-size:13px;max-width:500px">&ldquo;'+esc(a.covLetter)+'&rdquo;</div>':'')+'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-gh btn-sm" onclick="viewApplicantProfile(\''+a.applicantId+'\')">View Profile</button><button class="btn btn-o btn-sm" onclick="openInviteModal(\''+a.applicantId+'\',\''+esc(a.applicantName)+'\',\''+esc(a.jobTitle)+'\')">Send Invite</button><button class="btn btn-s btn-sm" onclick="openScheduleModal(\''+a.applicantId+'\',\''+esc(a.jobTitle)+'\')">Schedule Interview</button></div></div><div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end"><span class="badge '+(sc[a.status]||'b-sl')+'">'+a.status+'</span><select class="fi fsel" style="width:150px;font-size:12px;padding:5px 28px 5px 8px" onchange="updateAppStatus(\''+a.applicantId+'\',\''+a.jobId+'\',this.value)"><option '+(a.status==='applied'?'selected':'')+'>applied</option><option '+(a.status==='reviewing'?'selected':'')+'>reviewing</option><option '+(a.status==='interview'?'selected':'')+'>interview</option><option '+(a.status==='accepted'?'selected':'')+'>accepted</option><option '+(a.status==='rejected'?'selected':'')+'>rejected</option></select></div></div></div>'}).join('')+'</div>':'<div class="empty"><div style="font-size:36px;margin-bottom:10px">&#128236;</div><div class="empty-t">No applications yet</div></div>';}
   return '<div class="page"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"><div><div style="font-size:20px;font-weight:700;color:var(--bark)">Employer Dashboard</div><div style="font-size:13px;color:var(--cara)">'+esc(u.companyName||u.email)+'</div></div><button class="btn btn-g btn-lg" onclick="openPostJob()">+ Post New Job</button></div>'+stats+tabs+content+'</div>';
 }
-function toggleJobStatus(jid){var j=ST.jobs.find(function(x){return x.id===jid});if(!j)return;j.status=j.status==='active'?'paused':'active';sSet('ah_jobs',ST.jobs);toast(j.status==='active'?'Job reactivated.':'Job paused.','info');renderPage()}
-function deleteJob(jid){if(!confirm('Delete this job?'))return;ST.jobs=ST.jobs.filter(function(j){return j.id!==jid});sSet('ah_jobs',ST.jobs);toast('Deleted.','info');renderPage()}
+function toggleJobStatus(jid){var j=ST.jobs.find(function(x){return x.id===jid});if(!j)return;j.status=j.status==='active'?'paused':'active';sSet('ah_jobs',ST.jobs);if(fbUser){db.collection('jobs').doc(jid).update({status:j.status});}toast(j.status==='active'?'Job reactivated.':'Job paused.','info');renderPage()}
+function deleteJob(jid){if(!confirm('Delete this job?'))return;ST.jobs=ST.jobs.filter(function(j){return j.id!==jid});sSet('ah_jobs',ST.jobs);if(fbUser){db.collection('jobs').doc(jid).delete();}toast('Deleted.','info');renderPage()}
 function updateAppStatus(appId,jobId,status){var ea=sGet('ah_eapps_'+ST.user.id)||[];var a=ea.find(function(x){return x.applicantId===appId&&x.jobId===jobId});if(a)a.status=status;sSet('ah_eapps_'+ST.user.id,ea);var aa=sGet('ah_applied_'+appId)||[];var a2=aa.find(function(x){return x.jobId===jobId});if(a2){a2.status=status;sSet('ah_applied_'+appId,aa)}toast('Updated.','success')}
 function viewApplicantProfile(uid2){var all=sGet('ah_users')||[];var u2=all.find(function(x){return x.id===uid2});if(!u2){showModal('md-md','<div class="md-h"><div class="md-t">Applicant Profile</div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b"><div class="al al-i">Profile not available yet.</div></div>');return;}var edu=sGet('education_'+uid2)||[];var exp=sGet('experience_'+uid2)||[];var skills=sGet('skills_'+uid2)||[];showModal('md-lg','<div class="md-h"><div style="display:flex;align-items:center;gap:14px">'+avHTML(u2.avatarUrl,u2.name||u2.email,52)+'<div><div class="md-t">'+esc(u2.name||'Applicant')+'</div><div style="color:var(--cara);font-size:13px">'+esc(u2.profileLocation||u2.email)+'</div></div></div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b">'+(u2.bio?'<div style="font-size:14px;line-height:1.7">'+esc(u2.bio)+'</div>':'')+(exp.length?'<div><div style="font-weight:700;font-size:15px;margin-bottom:10px">Work Experience</div>'+exp.map(function(e){return '<div class="edu-c"><div style="font-weight:700">'+esc(e.title||'')+(e.company?' @ '+esc(e.company):'')+'</div><div style="font-size:12px;color:var(--cara)">'+esc(e.startDate||'')+(e.current?' – Present':(e.endDate?' – '+esc(e.endDate):''))+'</div>'+(e.desc?'<div style="font-size:13px;margin-top:5px">'+esc(e.desc)+'</div>':'')+'</div>'}).join('')+'</div>':'')+(skills.length?'<div><div style="font-weight:700;font-size:15px;margin-bottom:10px">Skills</div><div style="display:flex;flex-wrap:wrap;gap:7px">'+skills.map(function(s){return '<span style="background:var(--parch);padding:5px 12px;border-radius:100px;font-size:13px;border:1px solid var(--sand)">'+esc(s.name)+(s.lvl?' · '+esc(s.lvl):'')+'</span>'}).join('')+'</div></div>':'')+(edu.length?'<div><div style="font-weight:700;font-size:15px;margin-bottom:10px">Education</div>'+edu.map(function(e){return '<div class="edu-c"><div style="font-weight:700">'+esc(e.school||'')+'</div><div style="font-size:12px;color:var(--cara)">'+esc(e.lvl||'')+(e.field?' · '+esc(e.field):'')+(e.yr?' · '+esc(e.yr):'')+'</div></div>'}).join('')+'</div>':'')+'</div>');}
 function openInviteModal(appId,appName,jobTitle){showModal('md-sm','<div class="md-h"><div class="md-t">Send Invitation</div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b"><div class="al al-br">Inviting <strong>'+esc(appName)+'</strong> re: <strong>'+esc(jobTitle)+'</strong></div><div class="fg"><label class="fl">Message (optional)</label><textarea class="fi ftxt" id="inv-msg" rows="4" placeholder="Hi! We would love to connect..."></textarea></div><div style="display:flex;gap:8px"><button class="btn btn-p" onclick="sendInvitation(\''+appId+'\',\''+esc(appName)+'\',\''+esc(jobTitle)+'\')">Send</button><button class="btn btn-gh" onclick="closeModal()">Cancel</button></div></div>');}
-function sendInvitation(appId,appName,jobTitle){var msg=(document.getElementById('inv-msg')||{}).value||'';var u=ST.user;var inv={id:uid(),empId:u.id,empName:u.name||u.email,company:u.companyName||'',jobTitle:jobTitle,msg:msg,status:'pending',sentAt:Date.now()};var ex=sGet('ah_inv_'+appId)||[];ex.push(inv);sSet('ah_inv_'+appId,ex);closeModal();toast('Invitation sent!','success');}
+function sendInvitation(appId,appName,jobTitle){var msg=(document.getElementById('inv-msg')||{}).value||'';var u=ST.user;var inv={id:uid(),empId:u.id,empName:u.name||u.email,company:u.companyName||'',jobTitle:jobTitle,msg:msg,status:'pending',sentAt:Date.now()};var ex=sGet('ah_inv_'+appId)||[];ex.push(inv);sSet('ah_inv_'+appId,ex);if(fbUser){db.collection('users').doc(appId).collection('invitations').doc(inv.id).set(inv);}closeModal();toast('Invitation sent!','success');}
 function openScheduleModal(appId,jobTitle){showModal('md-sm','<div class="md-h"><div class="md-t">Schedule Interview</div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b"><div class="fg"><label class="fl">Date <span class="req">*</span></label><input class="fi" type="date" id="iv-date"></div><div class="fg"><label class="fl">Time <span class="req">*</span></label><input class="fi" type="time" id="iv-time"></div><div class="fg"><label class="fl">Format</label><select class="fi fsel" id="iv-fmt"><option>Video Call</option><option>Phone Call</option><option>In-Person</option></select></div><div class="fg"><label class="fl">Location / Link (optional)</label><input class="fi" id="iv-loc" placeholder="Zoom link or address"></div><div class="fg"><label class="fl">Notes (optional)</label><textarea class="fi" id="iv-notes" rows="3"></textarea></div><div style="display:flex;gap:8px"><button class="btn btn-p" onclick="doSchedule(\''+appId+'\',\''+esc(jobTitle)+'\')">Schedule</button><button class="btn btn-gh" onclick="closeModal()">Cancel</button></div></div>');}
-function doSchedule(appId,jobTitle){var date=(document.getElementById('iv-date')||{}).value;var time=(document.getElementById('iv-time')||{}).value;if(!date||!time){toast('Date and time required.','error');return;}var iv={id:uid(),jobTitle:jobTitle,company:ST.user.companyName||'',date:date,time:time,fmt:(document.getElementById('iv-fmt')||{}).value||'Video Call',loc:(document.getElementById('iv-loc')||{}).value||'',notes:(document.getElementById('iv-notes')||{}).value||''};var ex=sGet('ah_intv_'+appId)||[];ex.push(iv);sSet('ah_intv_'+appId,ex);closeModal();toast('Interview scheduled!','success');}
+function doSchedule(appId,jobTitle){var date=(document.getElementById('iv-date')||{}).value;var time=(document.getElementById('iv-time')||{}).value;if(!date||!time){toast('Date and time required.','error');return;}var iv={id:uid(),jobTitle:jobTitle,company:ST.user.companyName||'',date:date,time:time,fmt:(document.getElementById('iv-fmt')||{}).value||'Video Call',loc:(document.getElementById('iv-loc')||{}).value||'',notes:(document.getElementById('iv-notes')||{}).value||''};var ex=sGet('ah_intv_'+appId)||[];ex.push(iv);sSet('ah_intv_'+appId,ex);if(fbUser){db.collection('users').doc(appId).collection('interviews').doc(iv.id).set(iv);}closeModal();toast('Interview scheduled!','success');}
 
 /* ── POST JOB ── */
 var _editJid=null;
@@ -404,7 +492,7 @@ function openPostJob(jid){
   var chips=PHYS.map(function(d){return '<span class="chip'+(phys.indexOf(d)>=0?' sel':'')+'" onclick="this.classList.toggle(\'sel\')">'+d+'</span>'}).join('');
   showModal('md-lg','<div class="md-h"><div class="md-t">'+(jid?'Edit Job':'Post New Job')+'</div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b"><div class="al al-br">&#9855; Physical demands, travel, and accommodation contact are ADA-required.</div><div class="frow"><div class="fg"><label class="fl">Job Title <span class="req">*</span></label><input class="fi" id="pj-title" value="'+esc(j?j.title:'')+'"></div><div class="fg"><label class="fl">Company <span class="req">*</span></label><input class="fi" id="pj-co" value="'+esc(j?j.company:(ST.user.companyName||''))+'"></div></div><div class="frow3"><div class="fg"><label class="fl">Location <span class="req">*</span></label><select class="fi fsel" id="pj-loc"><option value="">Select</option>'+STATES.map(function(s){return '<option '+(j&&j.location===s?'selected':'')+'>'+s+'</option>'}).join('')+'</select></div><div class="fg"><label class="fl">Work Mode</label><select class="fi fsel" id="pj-wm">'+WMODES.map(function(m){return '<option '+(j&&j.wm===m?'selected':'')+'>'+m+'</option>'}).join('')+'</select></div><div class="fg"><label class="fl">Job Type</label><select class="fi fsel" id="pj-jt">'+JTYPES.map(function(t){return '<option '+(j&&j.jt===t?'selected':'')+'>'+t+'</option>'}).join('')+'</select></div></div><div class="fg"><label class="fl">Salary (optional)</label><input class="fi" id="pj-sal" placeholder="e.g. $70,000–$90,000/yr" value="'+esc(j?j.sal:'')+'"></div><div class="fg"><label class="fl">Description <span class="req">*</span></label><textarea class="fi ftxt" id="pj-desc" rows="5" placeholder="Describe responsibilities, team...">'+esc(j?j.desc:'')+'</textarea></div><div class="fg"><label class="fl">Requirements <span class="req">*</span></label><textarea class="fi ftxt" id="pj-reqs" rows="4" placeholder="Skills, experience, education...">'+esc(j?j.reqs:'')+'</textarea></div><hr style="border:none;border-top:1px solid var(--sand)"><div style="font-weight:700;font-size:15px;color:var(--bark);margin-bottom:10px">&#9855; ADA-Required Disclosures</div><div class="fg"><label class="fl">Physical Demands (select all that apply)</label><div class="chips" id="phys-chips">'+chips+'</div></div><div class="frow"><div><label class="cb-row"><input type="checkbox" id="pj-travel" '+(j&&j.travel?'checked':'')+'><span style="font-weight:700;font-size:13px">Travel is required</span></label><div class="fg"><label class="fl">Travel Details</label><textarea class="fi" id="pj-travdet" rows="3" placeholder="Frequency, destinations...">'+esc(j?j.travelDetails:'')+'</textarea></div></div><div class="fg"><label class="fl">Accommodations Offered</label><textarea class="fi" id="pj-accomm" rows="3" placeholder="Flexible schedule, screen reader...">'+esc(j?j.accomm:'')+'</textarea></div></div><div class="fg"><label class="fl">Accommodation Contact Email <span class="req">*</span></label><input class="fi" type="email" id="pj-email" placeholder="accessibility@company.com" value="'+esc(j?j.accommEmail:(ST.user.email||''))+'"></div><div style="display:flex;gap:8px"><button class="btn btn-p btn-lg" onclick="saveJob()">'+(jid?'Save Changes':'Post Job')+'</button><button class="btn btn-gh" onclick="closeModal()">Cancel</button></div></div>');
 }
-function saveJob(){var title=(document.getElementById('pj-title')||{}).value||'';var co=(document.getElementById('pj-co')||{}).value||'';var loc=(document.getElementById('pj-loc')||{}).value||'';var desc=(document.getElementById('pj-desc')||{}).value||'';var reqs=(document.getElementById('pj-reqs')||{}).value||'';var email=(document.getElementById('pj-email')||{}).value||'';if(!title||!co||!loc||desc.length<20||!reqs||!email){toast('Fill all required fields.','error');return;}var selChips=Array.from(document.querySelectorAll('#phys-chips .chip.sel')).map(function(c){return c.textContent});var j={id:_editJid||uid(),empId:ST.user.id,employerName:ST.user.name,coLogo:ST.user.companyLogo||null,title:title,company:co,location:loc,wm:(document.getElementById('pj-wm')||{}).value||'On-site',jt:(document.getElementById('pj-jt')||{}).value||'Full-time',sal:(document.getElementById('pj-sal')||{}).value||'',desc:desc,reqs:reqs,phys:selChips,travel:!!((document.getElementById('pj-travel')||{}).checked),travelDetails:(document.getElementById('pj-travdet')||{}).value||'',accomm:(document.getElementById('pj-accomm')||{}).value||'',accommEmail:email,status:'active',createdAt:_editJid?(ST.jobs.find(function(x){return x.id===_editJid})||{}).createdAt||Date.now():Date.now()};if(_editJid){ST.jobs=ST.jobs.map(function(x){return x.id===_editJid?j:x})}else{ST.jobs.unshift(j)}sSet('ah_jobs',ST.jobs);closeModal();toast(_editJid?'Job updated!':'Job posted!','success');renderPage();}
+function saveJob(){var title=(document.getElementById('pj-title')||{}).value||'';var co=(document.getElementById('pj-co')||{}).value||'';var loc=(document.getElementById('pj-loc')||{}).value||'';var desc=(document.getElementById('pj-desc')||{}).value||'';var reqs=(document.getElementById('pj-reqs')||{}).value||'';var email=(document.getElementById('pj-email')||{}).value||'';if(!title||!co||!loc||desc.length<20||!reqs||!email){toast('Fill all required fields.','error');return;}var selChips=Array.from(document.querySelectorAll('#phys-chips .chip.sel')).map(function(c){return c.textContent});var j={id:_editJid||uid(),empId:ST.user.id,employerName:ST.user.name,coLogo:ST.user.companyLogo||null,title:title,company:co,location:loc,wm:(document.getElementById('pj-wm')||{}).value||'On-site',jt:(document.getElementById('pj-jt')||{}).value||'Full-time',sal:(document.getElementById('pj-sal')||{}).value||'',desc:desc,reqs:reqs,phys:selChips,travel:!!((document.getElementById('pj-travel')||{}).checked),travelDetails:(document.getElementById('pj-travdet')||{}).value||'',accomm:(document.getElementById('pj-accomm')||{}).value||'',accommEmail:email,status:'active',createdAt:_editJid?(ST.jobs.find(function(x){return x.id===_editJid})||{}).createdAt||Date.now():Date.now()};if(_editJid){ST.jobs=ST.jobs.map(function(x){return x.id===_editJid?j:x})}else{ST.jobs.unshift(j)}sSet('ah_jobs',ST.jobs);if(fbUser){db.collection('jobs').doc(j.id).set(j);}closeModal();toast(_editJid?'Job updated!':'Job posted!','success');renderPage();}
 
 /* ── SETTINGS ── */
 function renderSettings(){
@@ -483,12 +571,37 @@ var sflds=!isLogin?'<div class="fg"><label class="fl">'+(isEmp?'Contact Name':'F
 var sw=isLogin?'<div class="divtx"><span>No account? <button style="background:none;border:none;color:var(--sienna);cursor:pointer;font-weight:700;font-size:13px" onclick="showAuth(\'signup-applicant\')">Applicant</button> &middot; <button style="background:none;border:none;color:var(--sienna);cursor:pointer;font-weight:700;font-size:13px" onclick="showAuth(\'signup-employer\')">Employer</button></span></div>':'<div class="divtx"><span>Have an account? <button style="background:none;border:none;color:var(--sienna);cursor:pointer;font-weight:700;font-size:13px" onclick="showAuth(\'login\')">Sign in</button></span></div>';
 showModal('md-md','<div class="md-h"><div><div class="md-t">'+(isLogin?'Sign In':isEmp?'Employer Sign Up':'Applicant Sign Up')+'</div><div style="font-size:12px;color:var(--cara);margin-top:3px">'+(isEmp?'ADA-compliant employer access':'ADA-protected platform')+'</div></div><button class="md-x" onclick="closeModal()">&times;</button></div><div class="md-b" id="auth-body">'+sflds+'<div class="fg"><label class="fl">Email <span class="req">*</span></label><input class="fi" type="email" id="au-email" placeholder="you@example.com"></div><div class="fg"><label class="fl">Password <span class="req">*</span></label><div style="position:relative"><input class="fi" type="password" id="au-pw" placeholder="••••••••"'+(isLogin?'':' oninput="upPwB()"')+'><button type="button" onclick="var i=document.getElementById(\'au-pw\');i.type=i.type===\'password\'?\'text\':\'password\'" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--cara)">&#128065;</button></div>'+(isLogin?'':'<div class="pw-bar" id="pw-bar2"></div><div id="pw-lbl2" class="fhint"></div>')+'</div>'+(!isLogin?'<div class="fg"><label class="fl">Confirm Password <span class="req">*</span></label><input class="fi" type="password" id="au-pw2" placeholder="••••••••"></div>':'')+''+adaF+disF+'<button class="btn btn-p btn-lg" style="width:100%" onclick="submitAuth(\''+type+'\')">'+(isLogin?'Sign In':'Create Account & Verify Email')+'</button>'+sw+'</div>');}
 function upPwB(){var pw=(document.getElementById('au-pw')||{}).value||'';var r=pwStr(pw);var bar=document.getElementById('pw-bar2');var lbl=document.getElementById('pw-lbl2');if(bar)bar.style.background='linear-gradient(90deg,'+r.c+' '+(r.s*20)+'%,var(--sand) '+(r.s*20)+'%)';if(lbl){lbl.textContent=r.l;lbl.style.color=r.c}}
-async function submitAuth(type){var isLogin=type==='login',isEmp=type==='signup-employer';var email=(document.getElementById('au-email')||{}).value||'';var pw=(document.getElementById('au-pw')||{}).value||'';if(!email||!/^[^@]+@[^@]+\.[^@]+$/.test(email)){toast('Valid email required.','error');return;}if(!pw){toast('Password required.','error');return;}var all=await dbGetAll('users')||[];
-if(isLogin){var found=all.find(function(u){return u.email===email});if(!found){toast('No account found.','error');return;}if(found.password!==await hashPassword(pw)){toast('Incorrect password.','error');return;}ST.user=found;await dbSet('data','user',found);if(found.role==='applicant'){ST.savedIds=await dbGet('data','saved_'+found.id)||[];ST.archivedIds=await dbGet('data','arch_'+found.id)||[];ST.appliedApps=await dbGet('data','applied_'+found.id)||[];ST.invitations=await dbGet('data','inv_'+found.id)||[];ST.interviews=await dbGet('data','intv_'+found.id)||[];}closeModal();ST.page=found.role==='employer'?'dashboard':'jobs';toast('Welcome back, '+(found.name||found.email)+'!','success');render();return;}
-if(pw.length<8){toast('Min 8 characters.','error');return;}var pw2=(document.getElementById('au-pw2')||{}).value||'';if(pw!==pw2){toast("Passwords don't match.",'error');return;}var name=(document.getElementById('au-name')||{}).value||'';if(!name){toast('Name required.','error');return;}if(isEmp){var cn=(document.getElementById('au-coname')||{}).value||'';if(!cn){toast('Company name required.','error');return;}var ada=(document.getElementById('au-ada')||{}).checked,eeo=(document.getElementById('au-eeo')||{}).checked;if(!ada||!eeo){toast('Both ADA attestations required.','error');return;}}if(all.some(function(u){return u.email===email})){toast('Email already registered.','error');return;}
-var code=String(Math.floor(100000+Math.random()*900000));_authCode=code;_pendingUser={id:uid(),email:email,password:await hashPassword(pw),name:name,phone:(document.getElementById('au-phone')||{}).value||'',role:isEmp?'employer':'applicant',companyName:isEmp?((document.getElementById('au-coname')||{}).value||''):'',companySize:isEmp?((document.getElementById('au-cosize')||{}).value||''):'',website:isEmp?((document.getElementById('au-web')||{}).value||''):'',hasDisability:!isEmp&&!!((document.getElementById('au-dis')||{}).checked),createdAt:Date.now(),avatarUrl:null,visibility:'all'};
-document.getElementById('auth-body').innerHTML='<div class="al al-i">Verification code sent to '+esc(email)+'. Demo code: <strong>'+code+'</strong></div><div class="fg"><label class="fl">Enter 6-digit code <span class="req">*</span></label><input class="fi" id="v-code" placeholder="123456" maxlength="6" style="font-size:22px;letter-spacing:.15em;text-align:center"></div><button class="btn btn-p btn-lg" style="width:100%" onclick="verifyCode()">Verify &amp; Create Account</button><button class="btn btn-gh" style="width:100%;margin-top:8px" onclick="showAuth(\''+type+'\')">&#8592; Back</button>';}
-function verifyCode(){var v=(document.getElementById('v-code')||{}).value||'';if(v!==_authCode){toast('Incorrect code.','error');return;}var all=sGet('ah_users')||[];all.push(_pendingUser);sSet('ah_users',all);ST.user=_pendingUser;sSet('ah_user',_pendingUser);if(_pendingUser.role==='applicant'){ST.savedIds=[];ST.archivedIds=[];ST.appliedApps=[];ST.invitations=[];ST.interviews=[];}closeModal();ST.page=_pendingUser.role==='employer'?'dashboard':'jobs';toast('Welcome to AccessHire!','success');render();}
+async function submitAuth(type){var isLogin=type==='login',isEmp=type==='signup-employer';var email=(document.getElementById('au-email')||{}).value||'';var pw=(document.getElementById('au-pw')||{}).value||'';if(!email||!/^[^@]+@[^@]+\.[^@]+$/.test(email)){toast('Valid email required.','error');return;}if(!pw){toast('Password required.','error');return;}
+if(isLogin){
+  try{
+    await auth.signInWithEmailAndPassword(email,pw);
+    toast('Signed in!','success');
+    render();
+    closeModal();
+  }catch(e){
+    toast('Sign in failed: '+e.message,'error');
+  }
+  return;
+}
+if(pw.length<8){toast('Min 8 characters.','error');return;}var pw2=(document.getElementById('au-pw2')||{}).value||'';if(pw!==pw2){toast("Passwords don't match.",'error');return;}var name=(document.getElementById('au-name')||{}).value||'';if(!name){toast('Name required.','error');return;}if(isEmp){var cn=(document.getElementById('au-coname')||{}).value||'';if(!cn){toast('Company name required.','error');return;}var ada=(document.getElementById('au-ada')||{}).checked,eeo=(document.getElementById('au-eeo')||{}).checked;if(!ada||!eeo){toast('Both ADA attestations required.','error');return;}}
+try{
+  var result=await auth.createUserWithEmailAndPassword(email,pw);
+  var uid=result.user.uid;
+  var userData={id:uid,email:email,name:name,phone:(document.getElementById('au-phone')||{}).value||'',role:isEmp?'employer':'applicant',companyName:isEmp?((document.getElementById('au-coname')||{}).value||''):'',companySize:isEmp?((document.getElementById('au-cosize')||{}).value||''):'',website:isEmp?((document.getElementById('au-web')||{}).value||''):'',hasDisability:!isEmp&&!!((document.getElementById('au-dis')||{}).checked),createdAt:Date.now(),avatarUrl:null,visibility:'all'};
+  await db.collection('users').doc(uid).set(userData);
+  if(isEmp?((document.getElementById('au-ada')||{}).checked&&(document.getElementById('au-eeo')||{}).checked):true){
+    await auth.currentUser.updateProfile({displayName:name});
+  }
+  ST.user=userData;
+  closeModal();
+  ST.page=isEmp?'dashboard':'jobs';
+  toast('Account created! Welcome to AccessHire!','success');
+  render();
+}catch(e){
+  toast('Signup failed: '+e.message,'error');
+}
+}
+function verifyCode(){closeModal();}
 
 /* ── MODAL ── */
 function showModal(cls,html){document.getElementById('modal-root').innerHTML='<div class="ov" onclick="closeModalOv(event)"><div class="md '+cls+'">'+html+'</div></div>';}
